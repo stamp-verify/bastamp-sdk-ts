@@ -97,6 +97,33 @@ const account = await client.account.get();
 console.log(account.credits);
 ```
 
+### AI provenance — attest an AI generation event
+
+```ts
+import { BAStamp, hashFile } from "@bastamp/sdk";
+
+const client = new BAStamp({ apiKey: process.env.BASTAMP_API_KEY! });
+
+const r = await client.aiProvenance.attest({
+  model: "gpt-5",
+  modelVersion: "2026-04-15",
+  prompt: userPrompt,        // hashed locally — never sent
+  output: completion.text,   // hashed locally — never sent
+  params: { temperature: 0.7, seed: 42 },
+});
+
+// Save the manifest alongside the AI output:
+await fs.writeFile("output.txt", completion.text);
+await fs.writeFile("output.provenance.json", JSON.stringify(r.manifest, null, 2));
+console.log("anchored hash:", r.manifestHash);
+```
+
+`r.manifest` is the canonical attestation object. Deliver it with the AI output (or store it server-side). To verify later, anyone can drop the manifest on `bastamp.com/verify/<hash>` — the page recomputes the canonical SHA-256 and confirms it matches the on-chain anchor.
+
+If your prompt or output is private, pre-hash on your side and pass `promptHash` / `outputHash` instead — the SDK never sees the cleartext. To inspect the hash without spending a credit, use `client.aiProvenance.build({...})` which returns the same manifest + hash but skips the API call.
+
+See [`/use-cases/ai-provenance`](https://bastamp.com/use-cases/ai-provenance) for the AI Act Art. 50 framing and concrete integration examples.
+
 ### Hash any byte source
 
 ```ts

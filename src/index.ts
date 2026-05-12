@@ -1,5 +1,11 @@
 export { BAStamp } from "./client.js";
 export { hashFile } from "./hash.js";
+export { canonicalize } from "./ai-provenance.js";
+export type {
+  AiProvenanceManifest,
+  AttestInput,
+  AttestResult,
+} from "./ai-provenance.js";
 export {
   BAStampError,
   BAStampInvalidRequestError,
