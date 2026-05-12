@@ -1,0 +1,55 @@
+{
+  "name": "@bastamp/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for the BA | Stamp REST API — anchor SHA-256 hashes on Polygon.",
+  "license": "MIT",
+  "author": "Aletheia Tech Ltd",
+  "homepage": "https://bastamp.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stamp-verify/bastamp-sdk-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/stamp-verify/bastamp-sdk-ts/issues"
+  },
+  "keywords": [
+    "bastamp",
+    "blockchain",
+    "timestamp",
+    "polygon",
+    "sha256",
+    "merkle-proof",
+    "evidence",
+    "eidas",
+    "sdk",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}
