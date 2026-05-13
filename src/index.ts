@@ -6,6 +6,13 @@ export type {
   AttestInput,
   AttestResult,
 } from "./ai-provenance.js";
+export type {
+  ProjectManifest,
+  ProjectFileEntry,
+  ProjectFileInput,
+  StampProjectInput,
+  StampProjectResult,
+} from "./projects.js";
 export {
   BAStampError,
   BAStampInvalidRequestError,

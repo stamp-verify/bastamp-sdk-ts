@@ -124,6 +124,32 @@ If your prompt or output is private, pre-hash on your side and pass `promptHash`
 
 See [`/use-cases/ai-provenance`](https://bastamp.com/use-cases/ai-provenance) for the AI Act Art. 50 framing and concrete integration examples.
 
+### Stamp a multi-file project
+
+```ts
+import { BAStamp } from "@bastamp/sdk";
+import { readFile } from "node:fs/promises";
+
+const client = new BAStamp({ apiKey: process.env.BASTAMP_API_KEY! });
+
+const r = await client.projects.stamp({
+  name: "Book manuscript v1",
+  description: "12 chapters as of submission",
+  files: [
+    { name: "chapter-01.md", content: await readFile("chapter-01.md") },
+    { name: "chapter-02.md", content: await readFile("chapter-02.md") },
+    // … up to 10,000 files
+  ],
+});
+
+await fs.writeFile("project.manifest.json", JSON.stringify(r.manifest, null, 2));
+console.log("anchored hash:", r.manifestHash);
+```
+
+A canonical manifest commits to every file's SHA-256 plus the project name, description, and timestamp. **One credit total, no matter how many files.** Per-file verification: hash a file locally, find its hash in `manifest.files`, confirm `manifestHash` matches the on-chain anchor.
+
+Pass `sha256` directly per file when you've already hashed (e.g., file is private and you don't want bytes in memory). `client.projects.build({...})` returns the manifest + hash without anchoring (no credit), useful for review before commit or for batching.
+
 ### Hash any byte source
 
 ```ts

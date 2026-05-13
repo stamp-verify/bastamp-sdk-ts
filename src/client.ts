@@ -9,6 +9,7 @@ import {
 } from "./errors.js";
 import { backoffMs, retryAfterMs, shouldRetry, sleep } from "./retry.js";
 import { AiProvenanceResource } from "./ai-provenance.js";
+import { ProjectsResource } from "./projects.js";
 import type {
   Account,
   ApiErrorBody,
@@ -24,7 +25,7 @@ import type {
 
 const DEFAULT_BASE_URL = "https://bastamp.com";
 const DEFAULT_MAX_RETRIES = 3;
-const USER_AGENT = "bastamp-sdk-ts/0.2.0";
+const USER_AGENT = "bastamp-sdk-ts/0.3.0";
 
 /**
  * BA | Stamp REST client.
@@ -47,6 +48,7 @@ export class BAStamp {
   readonly stamps: StampsResource;
   readonly account: AccountResource;
   readonly aiProvenance: AiProvenanceResource;
+  readonly projects: ProjectsResource;
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #maxRetries: number;
@@ -63,6 +65,7 @@ export class BAStamp {
     this.stamps = new StampsResource(this);
     this.account = new AccountResource(this);
     this.aiProvenance = new AiProvenanceResource(this);
+    this.projects = new ProjectsResource(this);
   }
 
   /** @internal */
