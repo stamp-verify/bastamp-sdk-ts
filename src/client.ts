@@ -25,7 +25,7 @@ import type {
 
 const DEFAULT_BASE_URL = "https://bastamp.com";
 const DEFAULT_MAX_RETRIES = 3;
-const USER_AGENT = "bastamp-sdk-ts/0.3.0";
+const USER_AGENT = "bastamp-sdk-ts/0.4.0";
 
 /**
  * BA | Stamp REST client.

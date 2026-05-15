@@ -133,22 +133,30 @@ import { readFile } from "node:fs/promises";
 const client = new BAStamp({ apiKey: process.env.BASTAMP_API_KEY! });
 
 const r = await client.projects.stamp({
-  name: "Book manuscript v1",
-  description: "12 chapters as of submission",
+  name: "Case 2025-0042",
+  description: "Exhibits A through G",
   files: [
-    { name: "chapter-01.md", content: await readFile("chapter-01.md") },
-    { name: "chapter-02.md", content: await readFile("chapter-02.md") },
-    // … up to 10,000 files
+    { name: "exhibit-a.pdf", content: await readFile("exhibit-a.pdf") },
+    { name: "exhibit-b.pdf", content: await readFile("exhibit-b.pdf") },
+    // … up to 99 files
   ],
 });
 
 await fs.writeFile("project.manifest.json", JSON.stringify(r.manifest, null, 2));
-console.log("anchored hash:", r.manifestHash);
+console.log("project hash:", r.manifestHash);
+console.log("per-file stamps:", r.fileStamps.map((s) => s.contentHash));
 ```
 
-A canonical manifest commits to every file's SHA-256 plus the project name, description, and timestamp. **One credit total, no matter how many files.** Per-file verification: hash a file locally, find its hash in `manifest.files`, confirm `manifestHash` matches the on-chain anchor.
+**Pricing.** Each file is anchored individually (own on-chain stamp, own `/verify/<file-hash>` URL, own certificate) AND a project manifest binding them all is anchored separately. Total cost is **N + 1 credits** for N files — same per-file pricing as bulk upload plus a bonus project anchor that ties them together. All N+1 stamps land in the same on-chain batch (atomic group).
 
-Pass `sha256` directly per file when you've already hashed (e.g., file is private and you don't want bytes in memory). `client.projects.build({...})` returns the manifest + hash without anchoring (no credit), useful for review before commit or for batching.
+What the caller gets back:
+- `r.manifest` — the canonical attestation object. Save it; verifiers need it to confirm membership and ordering.
+- `r.manifestHash` — the on-chain anchor for the project as a whole.
+- `r.manifestStamp` — the stamp result for the manifest itself.
+- `r.fileStamps[]` — one stamp result per file, in input order. Each has its own `/verify/<contentHash>` URL.
+- `r.creditsCharged` — total credits the API charged. `r.duplicateCount` if any files were already owned.
+
+Pass `sha256` directly per file when bytes are private and you've already hashed them. `client.projects.build({...})` returns the manifest + hash without anchoring (no credit), useful for inspecting the hash before paying.
 
 ### Hash any byte source
 

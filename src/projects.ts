@@ -1,5 +1,5 @@
 import type { BAStamp } from "./client.js";
-import type { CreateStampResponse, RequestOptions } from "./types.js";
+import type { RequestOptions, StampResult } from "./types.js";
 import { hashFile } from "./hash.js";
 import { canonicalize } from "./ai-provenance.js";
 
@@ -61,11 +61,21 @@ export interface StampProjectInput {
 export interface StampProjectResult {
   manifest: ProjectManifest;
   manifestCanon: string;
+  /** SHA-256 of the canonicalized manifest. Same as `manifestStamp.contentHash`. */
   manifestHash: string;
-  stamp: CreateStampResponse;
+  /** The manifest's own stamp result (1 credit). */
+  manifestStamp: StampResult;
+  /** One stamp result per file, in the same order as `manifest.files`. */
+  fileStamps: StampResult[];
+  /** Total credits charged across all stamps in this project (N+1 minus duplicates). */
+  creditsCharged: number;
+  /** Files for which the caller already owned a stamp — no credit charged. */
+  duplicateCount: number;
 }
 
-const MAX_FILES = 10_000;
+// Capped to fit a single /v1/stamps/batch call (max 100 items) plus the
+// manifest stamp. Future versions can chunk for larger projects.
+const MAX_FILES = 99;
 
 export class ProjectsResource {
   readonly #client: BAStamp;
@@ -74,25 +84,28 @@ export class ProjectsResource {
   }
 
   /**
-   * Stamp a multi-file project as a single on-chain unit. Builds a
-   * canonical manifest committing to every file's SHA-256, hashes it,
-   * anchors the hash via /api/v1/stamps. Charges 1 credit regardless of
-   * the number of files in the project.
+   * Stamp a multi-file project. Each file is anchored individually (own
+   * Merkle leaf, own /verify/<file-hash> URL, own certificate) AND a
+   * project manifest binding them is anchored separately. Total cost is
+   * N + 1 credits for N files; same per-file pricing as bulk upload plus
+   * the bonus project anchor on top.
+   *
+   * The N+1 stamps are submitted via /api/v1/stamps/batch in a single
+   * call, so they land in the same on-chain batch (atomic group).
    *
    * ```ts
    * const r = await client.projects.stamp({
-   *   name: "Book manuscript v1",
-   *   description: "12 chapters as of submission",
+   *   name: "Case 2025-0042",
+   *   description: "Exhibits A through G",
    *   files: [
-   *     { name: "chapter-01.md", content: await readFile("chapter-01.md") },
-   *     { name: "chapter-02.md", content: await readFile("chapter-02.md") },
-   *     // …
+   *     { name: "exhibit-a.pdf", content: await readFile("exhibit-a.pdf") },
+   *     { name: "exhibit-b.pdf", content: await readFile("exhibit-b.pdf") },
    *   ],
    * });
    *
-   * // Save the manifest with the project — it's the verification artifact.
+   * // Per-file URLs: r.fileStamps[i] → /verify/<sha256>
+   * // Project URL:   r.manifestStamp → /verify/<manifestHash>
    * await fs.writeFile("project.manifest.json", JSON.stringify(r.manifest, null, 2));
-   * console.log("anchored hash:", r.manifestHash);
    * ```
    */
   async stamp(input: StampProjectInput, options: RequestOptions = {}): Promise<StampProjectResult> {
@@ -143,19 +156,43 @@ export class ProjectsResource {
     const manifestHash = "0x" + (await sha256Hex(manifestCanon));
 
     const short = manifestHash.slice(2, 10);
-    const fileName = `project-${sanitize(input.name)}-${short}.json`;
+    const projectSlug = sanitize(input.name);
+    const manifestFileName = `project-${projectSlug}-${short}.json`;
 
-    const stamp = await this.#client.stamps.create(
+    // Batch: N file stamps + the manifest stamp, in that order. The
+    // server processes them atomically (one batch row on chain).
+    const items = [
+      ...fileEntries.map((e) => ({
+        contentHash: e.sha256,
+        fileName: e.name,
+        ...(e.size != null ? { fileSize: e.size } : {}),
+        ...(e.mimeType != null ? { mimeType: e.mimeType } : {}),
+      })),
       {
         contentHash: manifestHash,
-        fileName,
+        fileName: manifestFileName,
         fileSize: manifestCanon.length,
         mimeType: "application/x-bastamp-project",
       },
-      options,
-    );
+    ];
 
-    return { manifest, manifestCanon, manifestHash, stamp };
+    const batch = await this.#client.stamps.createBatch({ items }, options);
+    // Last result is the manifest (same order we submitted).
+    const fileStamps = batch.results.slice(0, fileEntries.length);
+    const manifestStamp = batch.results[fileEntries.length];
+    if (!manifestStamp) {
+      throw new Error("internal: server returned fewer stamps than submitted");
+    }
+
+    return {
+      manifest,
+      manifestCanon,
+      manifestHash,
+      manifestStamp,
+      fileStamps,
+      creditsCharged: batch.creditsCharged,
+      duplicateCount: batch.duplicateCount,
+    };
   }
 
   /** Build the manifest + hash WITHOUT anchoring (mirror of aiProvenance.build). */

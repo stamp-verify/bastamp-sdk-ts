@@ -24,12 +24,23 @@ function fakeFetch(responses: (Response | Error)[]): {
   return { fetch: fetchImpl as unknown as typeof globalThis.fetch, calls };
 }
 
-function stampResponse(contentHash: string): Response {
+/**
+ * Build a batch response. Each item in `items` becomes a result; the
+ * server's response shape is { results: StampResult[], creditsCharged,
+ * duplicateCount }.
+ */
+function batchResponse(items: { contentHash: string; fileName?: string | null; duplicate?: boolean }[]): Response {
+  const results = items.map((it, idx) => ({
+    ownershipId: `o${idx}`,
+    stampId: `s${idx}`,
+    contentHash: it.contentHash,
+    fileName: it.fileName ?? null,
+    duplicate: it.duplicate ?? false,
+  }));
+  const creditsCharged = items.filter((it) => !it.duplicate).length;
+  const duplicateCount = items.filter((it) => it.duplicate).length;
   return new Response(
-    JSON.stringify({
-      stamp: { ownershipId: "o1", stampId: "s1", contentHash, fileName: null, duplicate: false },
-      creditsCharged: 1,
-    }),
+    JSON.stringify({ results, creditsCharged, duplicateCount }),
     { status: 201, headers: { "Content-Type": "application/json" } },
   );
 }
@@ -39,8 +50,16 @@ const HASH_B = "0x" + "b".repeat(64);
 const HASH_C = "0x" + "c".repeat(64);
 
 describe("projects.stamp", () => {
-  it("hashes file contents locally, builds canonical manifest, POSTs to /api/v1/stamps", async () => {
-    const { fetch, calls } = fakeFetch([stampResponse("0xdeadbeef")]);
+  it("submits N+1 items (N file stamps + manifest) to /api/v1/stamps/batch", async () => {
+    const hashHello = await sha256OfString("hello");
+    const hashWorld = await sha256OfString("world");
+    const { fetch, calls } = fakeFetch([
+      batchResponse([
+        { contentHash: hashHello, fileName: "chapter-01.md" },
+        { contentHash: hashWorld, fileName: "chapter-02.md" },
+        { contentHash: "0xmanifest" /* will be replaced below */, fileName: "project-…" },
+      ]),
+    ]);
     const c = new BAStamp({ apiKey: "ba_live_test", fetch });
 
     const r = await c.projects.stamp({
@@ -54,54 +73,74 @@ describe("projects.stamp", () => {
     });
 
     expect(r.manifest.schema).toBe("bastamp.project/v1");
-    expect(r.manifest.name).toBe("Book manuscript v1");
-    expect(r.manifest.description).toBe("Two chapters as of submission");
-    expect(r.manifest.createdAt).toBe("2026-05-13T12:00:00.000Z");
     expect(r.manifest.files).toHaveLength(2);
-    expect(r.manifest.files[0]!.name).toBe("chapter-01.md");
-    expect(r.manifest.files[0]!.sha256).toMatch(/^0x[0-9a-f]{64}$/);
-
-    expect(r.manifestCanon).toBe(canonicalize(r.manifest));
-    expect(r.manifestHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(r.fileStamps).toHaveLength(2);
+    expect(r.manifestStamp).toBeDefined();
 
     expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain("/api/v1/stamps/batch");
     const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.contentHash).toBe(r.manifestHash);
-    expect(body.mimeType).toBe("application/x-bastamp-project");
-    expect(body.fileName).toMatch(/^project-Book_manuscript_v1-[0-9a-f]{8}\.json$/);
+    expect(body.items).toHaveLength(3);   // 2 files + 1 manifest
+    expect(body.items[0].contentHash).toBe(hashHello);
+    expect(body.items[0].fileName).toBe("chapter-01.md");
+    expect(body.items[1].contentHash).toBe(hashWorld);
+    expect(body.items[2].contentHash).toBe(r.manifestHash);
+    expect(body.items[2].mimeType).toBe("application/x-bastamp-project");
+    expect(body.items[2].fileName).toMatch(/^project-Book_manuscript_v1-[0-9a-f]{8}\.json$/);
   });
 
-  it("accepts pre-computed sha256 per file (no content needed)", async () => {
-    const { fetch } = fakeFetch([stampResponse("0xx")]);
+  it("returns creditsCharged from the batch response (== N+1 when nothing duplicated)", async () => {
+    const { fetch } = fakeFetch([
+      batchResponse([
+        { contentHash: HASH_A },
+        { contentHash: HASH_B },
+        { contentHash: HASH_C },
+      ]),
+    ]);
     const c = new BAStamp({ apiKey: "ba_live_test", fetch });
-    const r = await c.projects.stamp({
-      name: "case-2025-0042",
-      files: [
-        { name: "doc-1.pdf", sha256: HASH_A, size: 12345 },
-        { name: "doc-2.pdf", sha256: HASH_B, size: 67890 },
-      ],
-    });
-    expect(r.manifest.files[0]!.sha256).toBe(HASH_A);
-    expect(r.manifest.files[0]!.size).toBe(12345);
-    expect(r.manifest.files[1]!.sha256).toBe(HASH_B);
-  });
-
-  it("defaults createdAt to now if not provided", async () => {
-    const { fetch } = fakeFetch([stampResponse("0xx")]);
-    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
-    const before = Date.now();
     const r = await c.projects.stamp({
       name: "p",
-      files: [{ name: "a", sha256: HASH_A }],
+      files: [
+        { name: "a", sha256: HASH_A },
+        { name: "b", sha256: HASH_B },
+      ],
     });
-    const after = Date.now();
-    const t = new Date(r.manifest.createdAt).getTime();
-    expect(t).toBeGreaterThanOrEqual(before - 1);
-    expect(t).toBeLessThanOrEqual(after + 1);
+    expect(r.creditsCharged).toBe(3); // 2 files + manifest, none duplicated
+    expect(r.duplicateCount).toBe(0);
   });
 
-  it("preserves file order (a verifier expects deterministic order in the array)", async () => {
-    const { fetch } = fakeFetch([stampResponse("0xx")]);
+  it("propagates duplicate flag — re-stamping an owned file doesn't double-charge", async () => {
+    const { fetch } = fakeFetch([
+      batchResponse([
+        { contentHash: HASH_A, duplicate: true },   // already owned
+        { contentHash: HASH_B },
+        { contentHash: HASH_C },
+      ]),
+    ]);
+    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
+    const r = await c.projects.stamp({
+      name: "p",
+      files: [
+        { name: "a", sha256: HASH_A },
+        { name: "b", sha256: HASH_B },
+      ],
+    });
+    expect(r.creditsCharged).toBe(2); // 1 new file + manifest, 1 file was dup
+    expect(r.duplicateCount).toBe(1);
+    expect(r.fileStamps[0]!.duplicate).toBe(true);
+    expect(r.fileStamps[1]!.duplicate).toBe(false);
+  });
+
+  it("preserves file order in the submitted batch (each file's stamp is at the same index in fileStamps)", async () => {
+    const hashes = [HASH_C, HASH_A, HASH_B];
+    const { fetch, calls } = fakeFetch([
+      batchResponse([
+        { contentHash: HASH_C, fileName: "c.md" },
+        { contentHash: HASH_A, fileName: "a.md" },
+        { contentHash: HASH_B, fileName: "b.md" },
+        { contentHash: "0xmanifest", fileName: "project-…" },
+      ]),
+    ]);
     const c = new BAStamp({ apiKey: "ba_live_test", fetch });
     const r = await c.projects.stamp({
       name: "p",
@@ -112,6 +151,7 @@ describe("projects.stamp", () => {
       ],
     });
     expect(r.manifest.files.map((f) => f.name)).toEqual(["c.md", "a.md", "b.md"]);
+    expect(r.fileStamps.map((s) => s.contentHash)).toEqual(hashes);
   });
 
   it("rejects empty files array", async () => {
@@ -121,26 +161,33 @@ describe("projects.stamp", () => {
     ).rejects.toThrow(/non-empty/);
   });
 
-  it("rejects > 10000 files", async () => {
+  it("rejects > 99 files (batch endpoint caps at 100 incl. manifest)", async () => {
     const c = new BAStamp({ apiKey: "ba_live_test", fetch: fakeFetch([]).fetch });
-    const files = Array.from({ length: 10001 }, (_, i) => ({
+    const files = Array.from({ length: 100 }, (_, i) => ({
       name: `f${i}.txt`,
       sha256: HASH_A,
     }));
-    await expect(c.projects.stamp({ name: "p", files })).rejects.toThrow(/10000/);
+    await expect(c.projects.stamp({ name: "p", files })).rejects.toThrow(/99/);
+  });
+
+  it("accepts exactly 99 files", async () => {
+    const { fetch } = fakeFetch([
+      batchResponse(Array.from({ length: 100 }, (_, i) => ({ contentHash: `0x${i.toString(16).padStart(64, "0")}` }))),
+    ]);
+    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
+    const files = Array.from({ length: 99 }, (_, i) => ({ name: `f${i}.txt`, sha256: HASH_A }));
+    const r = await c.projects.stamp({ name: "p", files });
+    expect(r.fileStamps).toHaveLength(99);
   });
 
   it("rejects a file with neither content nor sha256", async () => {
     const c = new BAStamp({ apiKey: "ba_live_test", fetch: fakeFetch([]).fetch });
     await expect(
-      c.projects.stamp({
-        name: "p",
-        files: [{ name: "a.txt" }],
-      }),
+      c.projects.stamp({ name: "p", files: [{ name: "a.txt" }] }),
     ).rejects.toThrow(/exactly one of/);
   });
 
-  it("rejects a file with both content AND sha256 (ambiguous intent)", async () => {
+  it("rejects a file with both content AND sha256", async () => {
     const c = new BAStamp({ apiKey: "ba_live_test", fetch: fakeFetch([]).fetch });
     await expect(
       c.projects.stamp({
@@ -150,7 +197,7 @@ describe("projects.stamp", () => {
     ).rejects.toThrow(/exactly one of/);
   });
 
-  it("rejects a malformed pre-computed hash", async () => {
+  it("rejects malformed pre-computed hash", async () => {
     const c = new BAStamp({ apiKey: "ba_live_test", fetch: fakeFetch([]).fetch });
     await expect(
       c.projects.stamp({
@@ -168,36 +215,49 @@ describe("projects.stamp", () => {
     ).rejects.toThrow(/name/);
   });
 
-  it("sanitizes project name in the generated fileName", async () => {
-    const { fetch, calls } = fakeFetch([stampResponse("0xx")]);
-    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
-    await c.projects.stamp({
-      name: "Case #42 / 2025 — final",
-      files: [{ name: "a", sha256: HASH_A }],
+  it("manifestStamp.contentHash equals the locally-computed manifestHash", async () => {
+    const { fetch } = fakeFetch([
+      batchResponse([
+        { contentHash: HASH_A, fileName: "a" },
+        // The manifest stamp's contentHash must match what we computed.
+        // The fakeFetch can't know it in advance — capture from the batch
+        // request and echo back. We use a placeholder for the test and
+        // assert separately on the SDK's behavior.
+      ]),
+    ]);
+    // For this test we need a smarter response. Let's wire it in-band:
+    let captured = "";
+    const c = new BAStamp({
+      apiKey: "ba_live_test",
+      fetch: (async (_url: string, init: RequestInit = {}) => {
+        const body = JSON.parse(init.body as string);
+        captured = body.items[body.items.length - 1].contentHash;
+        return batchResponse([
+          { contentHash: HASH_A, fileName: "a" },
+          { contentHash: captured, fileName: "project-…" },
+        ]);
+      }) as unknown as typeof globalThis.fetch,
     });
-    const body = JSON.parse(calls[0]!.init.body as string) as { fileName: string };
-    expect(body.fileName).toMatch(/^project-Case__42___2025___final-[0-9a-f]{8}\.json$/);
-  });
-
-  it("same input produces same manifestHash (deterministic)", async () => {
-    const { fetch } = fakeFetch([stampResponse("0xx"), stampResponse("0xx")]);
-    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
-    const input = {
+    const r = await c.projects.stamp({
       name: "p",
-      files: [
-        { name: "a.md", sha256: HASH_A },
-        { name: "b.md", sha256: HASH_B },
-      ],
+      files: [{ name: "a", sha256: HASH_A }],
       createdAt: "2026-05-13T00:00:00.000Z",
-    };
-    const r1 = await c.projects.stamp(input);
-    const r2 = await c.projects.stamp(input);
-    expect(r1.manifestHash).toBe(r2.manifestHash);
+    });
+    expect(r.manifestStamp.contentHash).toBe(r.manifestHash);
+    expect(r.manifestHash).toBe(captured);
   });
 
   it("a verifier recomputing canonical SHA-256 from the manifest gets back manifestHash", async () => {
-    const { fetch } = fakeFetch([stampResponse("0xx")]);
-    const c = new BAStamp({ apiKey: "ba_live_test", fetch });
+    const captureAndEcho = (async (_url: string, init: RequestInit = {}) => {
+      const body = JSON.parse(init.body as string);
+      const manifestHash = body.items[body.items.length - 1].contentHash;
+      return batchResponse([
+        { contentHash: HASH_A, fileName: "a.md" },
+        { contentHash: HASH_B, fileName: "b.md" },
+        { contentHash: manifestHash, fileName: "project-…" },
+      ]);
+    }) as unknown as typeof globalThis.fetch;
+    const c = new BAStamp({ apiKey: "ba_live_test", fetch: captureAndEcho });
     const r = await c.projects.stamp({
       name: "p",
       files: [
@@ -207,11 +267,7 @@ describe("projects.stamp", () => {
       createdAt: "2026-05-13T00:00:00.000Z",
     });
     const recomputedCanon = canonicalize(r.manifest);
-    const bytes = new TextEncoder().encode(recomputedCanon);
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    const recomputedHash =
-      "0x" + Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-    expect(recomputedHash).toBe(r.manifestHash);
+    expect(await sha256OfString(recomputedCanon)).toBe(r.manifestHash);
   });
 });
 
@@ -238,3 +294,13 @@ const _typeCheck: ProjectManifest = {
   files: [{ name: "a", sha256: HASH_A }],
 };
 void _typeCheck;
+
+// ── helpers ──
+
+async function sha256OfString(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return "0x" + Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}

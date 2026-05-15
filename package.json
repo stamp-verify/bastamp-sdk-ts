@@ -1,6 +1,6 @@
 {
   "name": "@bastamp/sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Official TypeScript SDK for the BA | Stamp REST API — anchor SHA-256 hashes on Polygon.",
   "license": "MIT",
   "author": "Aletheia Tech Ltd",
